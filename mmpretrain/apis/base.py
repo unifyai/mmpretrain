@@ -92,6 +92,7 @@ class BaseInferencer:
                  device: Union[str, torch.device, None] = None,
                  device_map=None,
                  offload_folder=None,
+                 ivy_transpile=True,
                  **kwargs) -> None:
 
         if isinstance(model, BaseModel):
@@ -118,8 +119,42 @@ class BaseInferencer:
 
         self.config = model._config
         self.model = model
-        self.pipeline = self._init_pipeline(self.config)
+        self.pipeline, input_shape = self._init_pipeline(self.config)
+        self.ivy_transpile = ivy_transpile
+        if ivy_transpile:
+            # import ivy
+            from transpiler.transpiler import transpile
+            import jax
+            # created solely to do eager transpile here
+            _dummy_tensor = torch.rand(1, 3, input_shape, input_shape)
+            self.flax_graph = transpile(model, to="flax", args=(_dummy_tensor,))
+            _dummy_tensor = _dummy_tensor.detach().cpu().numpy()
+            rng_key = jax.random.PRNGKey(0)
+            params = self.flax_graph.init(rng_key, _dummy_tensor) # Initialization call
+            @jax.jit
+            def jit_inference(arg):
+                return self.flax_graph.apply(params, arg)
+            self.jax_predict = jit_inference
         self.visualizer = None
+    
+
+    @staticmethod
+    def convert_preds_samples(cls_score, data_samples):
+        pred_scores = torch.nn.functional.softmax(cls_score, dim=1)
+        pred_labels = pred_scores.argmax(dim=1, keepdim=True).detach()
+        out_data_samples = []
+        if data_samples is None:
+            data_samples = [None for _ in range(pred_scores.size(0))]
+
+        for data_sample, score, label in zip(data_samples, pred_scores,
+                                             pred_labels):
+            if data_sample is None:
+                data_sample = DataSample()
+
+            data_sample.set_pred_score(score).set_pred_label(label)
+            out_data_samples.append(data_sample)
+        return out_data_samples
+        
 
     def __call__(
         self,
@@ -157,7 +192,14 @@ class BaseInferencer:
         preds = []
         for data in track(
                 inputs, 'Inference', total=ceil(len(ori_inputs) / batch_size)):
-            preds.extend(self.forward(data, **forward_kwargs))
+            if self.ivy_transpile:
+                data = self.model.data_preprocessor(data, training=False)
+                inputs = data['inputs'].detach().cpu().numpy()
+                outputs = torch.from_numpy(np.asarray(self.jax_predict(inputs)))
+                data_samples = self.convert_preds_samples(outputs, None)
+                preds.extend(data_samples)
+            else:
+                preds.extend(self.forward(data, **forward_kwargs))
         visualization = self.visualize(ori_inputs, preds, **visualize_kwargs)
         results = self.postprocess(preds, visualization, return_datasamples,
                                    **postprocess_kwargs)
