@@ -92,7 +92,7 @@ class BaseInferencer:
                  device: Union[str, torch.device, None] = None,
                  device_map=None,
                  offload_folder=None,
-                 ivy_transpile=True,
+                 ivy_transpile=False,
                  **kwargs) -> None:
 
         if isinstance(model, BaseModel):
@@ -119,14 +119,16 @@ class BaseInferencer:
 
         self.config = model._config
         self.model = model
-        self.pipeline, input_shape = self._init_pipeline(self.config)
+        self.pipeline = self._init_pipeline(self.config)
         self.ivy_transpile = ivy_transpile
         if ivy_transpile:
             # import ivy
             from transpiler.transpiler import transpile
             import jax
             # created solely to do eager transpile here
+            input_shape = self.config.test_dataloader.dataset.pipeline[2]['crop_size']
             _dummy_tensor = torch.rand(1, 3, input_shape, input_shape)
+            print('Transpiling to flax for faster inference...')
             self.flax_graph = transpile(model, to="flax", args=(_dummy_tensor,))
             _dummy_tensor = _dummy_tensor.detach().cpu().numpy()
             rng_key = jax.random.PRNGKey(0)
@@ -136,24 +138,6 @@ class BaseInferencer:
                 return self.flax_graph.apply(params, arg)
             self.jax_predict = jit_inference
         self.visualizer = None
-    
-
-    @staticmethod
-    def convert_preds_samples(cls_score, data_samples):
-        pred_scores = torch.nn.functional.softmax(cls_score, dim=1)
-        pred_labels = pred_scores.argmax(dim=1, keepdim=True).detach()
-        out_data_samples = []
-        if data_samples is None:
-            data_samples = [None for _ in range(pred_scores.size(0))]
-
-        for data_sample, score, label in zip(data_samples, pred_scores,
-                                             pred_labels):
-            if data_sample is None:
-                data_sample = DataSample()
-
-            data_sample.set_pred_score(score).set_pred_label(label)
-            out_data_samples.append(data_sample)
-        return out_data_samples
         
 
     def __call__(
@@ -196,7 +180,7 @@ class BaseInferencer:
                 data = self.model.data_preprocessor(data, training=False)
                 inputs = data['inputs'].detach().cpu().numpy()
                 outputs = torch.from_numpy(np.asarray(self.jax_predict(inputs)))
-                data_samples = self.convert_preds_samples(outputs, None)
+                data_samples = self.model.head._get_predictions(outputs, None)
                 preds.extend(data_samples)
             else:
                 preds.extend(self.forward(data, **forward_kwargs))

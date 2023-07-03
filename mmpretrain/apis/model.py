@@ -346,6 +346,8 @@ def inference_model(model, *args, **kwargs):
     Args:
         model (BaseModel | str | Config): The loaded model, the model
             name or the config of the model.
+        ivy_transpile (bool): Whether to use Ivy to transpile to Jax to get
+            ~2x latency speed up
         *args: Positional arguments to call the inferencer.
         **kwargs: Other keyword arguments to initialize and call the
             correspondding inferencer.
@@ -380,14 +382,23 @@ def inference_model(model, *args, **kwargs):
         'Image-To-Text Retrieval': ImageToTextRetrievalInferencer,
         'NLVR': NLVRInferencer,
     }
+    ivy_supported_inferencers = ['Image Classification']
 
     inferencer_type = None
 
     if metainfo is not None and metainfo.results is not None:
         tasks = set(result.task for result in metainfo.results)
-        inferencer_type = [
-            task_mapping.get(task) for task in tasks if task in task_mapping
-        ]
+        inferencer_type = []
+        for task in tasks:
+            if task in task_mapping:
+                if 'ivy_transpile' in kwargs:
+                    if kwargs.get('ivy_transpile'):
+                        if task not in ivy_supported_inferencers:
+                            warnings.warn("Inferencer isn't supported by ivy_transpile yet. "
+                                        f'Full list of supported inferencers: {ivy_supported_inferencers} '
+                                        f'Running inferencer after disabling ivy transpile. ')
+                            kwargs['ivy_transpile'] = False
+                inferencer_type.append(task_mapping.get(task))
         if len(inferencer_type) > 1:
             inferencer_names = [cls.__name__ for cls in inferencer_type]
             warnings.warn('The model supports multiple tasks, auto select '

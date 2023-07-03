@@ -62,9 +62,10 @@ class ImageClassificationInferencer(BaseInferencer):
                  pretrained: Union[bool, str] = True,
                  device: Union[str, torch.device, None] = None,
                  classes=None,
+                 ivy_transpile=False,
                  **kwargs) -> None:
         super().__init__(
-            model=model, pretrained=pretrained, device=device, **kwargs)
+            model=model, pretrained=pretrained, device=device, ivy_transpile=ivy_transpile, **kwargs)
 
         if classes is not None:
             self.classes = classes
