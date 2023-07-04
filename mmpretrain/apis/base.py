@@ -139,7 +139,18 @@ class BaseInferencer:
             self.jax_predict = jit_inference
         self.visualizer = None
         
-
+    
+    def predict_wrapper(self, data):
+        data = self.model.data_preprocessor(data, training=False)
+        inputs = data['inputs'].detach().cpu().numpy()
+        outputs = torch.from_numpy(np.asarray(self.jax_predict(inputs)))
+        # NOTE: following line is dependent on exact model specs where it currently
+        # assumes model is resnet50_8xb32_in1k
+        # TODO: make this dynamic instead of above assumption
+        data_samples = self.model.head._get_predictions(outputs, None)
+        return data_samples
+        
+        
     def __call__(
         self,
         inputs,
@@ -177,11 +188,7 @@ class BaseInferencer:
         for data in track(
                 inputs, 'Inference', total=ceil(len(ori_inputs) / batch_size)):
             if self.ivy_transpile:
-                data = self.model.data_preprocessor(data, training=False)
-                inputs = data['inputs'].detach().cpu().numpy()
-                outputs = torch.from_numpy(np.asarray(self.jax_predict(inputs)))
-                data_samples = self.model.head._get_predictions(outputs, None)
-                preds.extend(data_samples)
+                preds.extend(self.predict_wrapper(data))
             else:
                 preds.extend(self.forward(data, **forward_kwargs))
         visualization = self.visualize(ori_inputs, preds, **visualize_kwargs)
