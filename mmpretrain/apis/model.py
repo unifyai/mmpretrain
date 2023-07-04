@@ -100,6 +100,7 @@ def get_model(model: Union[str, Config],
               device_map=None,
               offload_folder=None,
               url_mapping: Tuple[str, str] = None,
+              ivy_transpile: bool = False,
               **kwargs):
     """Get a pre-defined model or create a model from config.
 
@@ -124,10 +125,14 @@ def get_model(model: Union[str, Config],
             checkpoint link. For example, load checkpoint from a local dir
             instead of download by ``('https://.*/', './checkpoint')``.
             Defaults to None.
+        ivy_transpile (bool): Whether to use Ivy to transpile to Jax to get
+            ~2x latency speed up. Only to be used for inference as it overrides
+            default return behaviour to return jitted inference fn
         **kwargs: Other keyword arguments of the model config.
 
     Returns:
-        mmengine.model.BaseModel: The result model.
+        If ivy_transpile is True, returns jitted inference fn to pass inputs
+        Else, returns a mmengine.model.BaseModel: The result model.
 
     Examples:
         Get a ResNet-50 model and extract images feature:
@@ -221,6 +226,24 @@ def get_model(model: Union[str, Config],
     model._config = config  # save the config in the model
     model._metainfo = metainfo  # save the metainfo in the model
     model.eval()
+    if ivy_transpile:
+        # from ivy import transpile
+        from transpiler.transpiler import transpile
+        import jax
+        import torch
+        # created solely to do eager transpile here
+        input_shape = config.test_dataloader.dataset.pipeline[2]['crop_size']
+        _dummy_tensor = torch.rand(1, 3, input_shape, input_shape)
+        print('Eager transpiling to flax for faster inference...')
+        flax_graph = transpile(model, to="flax", args=(_dummy_tensor,))
+        _dummy_tensor = _dummy_tensor.detach().cpu().numpy()
+        rng_key = jax.random.PRNGKey(0)
+        params = flax_graph.init(rng_key, _dummy_tensor) # Initialization call
+        del _dummy_tensor
+        @jax.jit
+        def jit_inference(arg):
+            return flax_graph.apply(params, arg)
+        return jit_inference
     return model
 
 
