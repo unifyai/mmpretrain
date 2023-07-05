@@ -8,7 +8,7 @@ from os import PathLike
 from pathlib import Path
 from typing import List, Tuple, Union
 
-from mmengine.config import Config
+from mmengine.config import Config, ConfigDict
 from modelindex.load_model_index import load
 from modelindex.models.Model import Model
 
@@ -92,6 +92,24 @@ class ModelHub:
     def has(cls, model_name):
         """Whether a model name is in the ModelHub."""
         return model_name in cls._models_dict
+
+
+def get_scale(cfg):
+  if type(cfg) == ConfigDict:
+    if cfg.get('type', False) and cfg.get('scale', False):
+      return cfg['scale']
+    else:
+      for k in cfg.keys():
+        input_shape = get_scale(cfg[k])
+        if input_shape:
+          return input_shape
+  elif type(cfg) == list:
+    for block in cfg:
+      input_shape = get_scale(block)
+      if input_shape:
+        return input_shape
+  else:
+    return None
 
 
 def get_model(model: Union[str, Config],
@@ -232,7 +250,7 @@ def get_model(model: Union[str, Config],
         import jax
         import torch
         # created solely to do eager transpile here
-        input_shape = config.test_dataloader.dataset.pipeline[2]['crop_size']
+        input_shape = get_scale(config.train_pipeline)
         _dummy_tensor = torch.rand(1, 3, input_shape, input_shape)
         print('Eager transpiling to flax for faster inference...')
         flax_graph = transpile(model, to="flax", args=(_dummy_tensor,))
